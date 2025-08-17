@@ -4,7 +4,7 @@
 [![Version](https://img.shields.io/badge/version-0.1.0-blue.svg)](https://github.com/killcod3/temps3/releases)
 [![Platform](https://img.shields.io/badge/platform-Windows%20%7C%20Linux%20-lightgrey.svg)](https://github.com/killcod3/temps3/releases)
 
-A secure CLI application for temporary file storage using AWS S3 with automatic expiration, intelligent chunking, and local history tracking
+A secure CLI application for temporary file storage using AWS S3 with automatic expiration, intelligent chunking, and local history tracking.
 
 
 ## 🌟 Key Features
@@ -164,4 +164,6 @@ This project is licensed under the MIT License. See the [LICENSE](./LICENSE) fil
 
 ---
 
-**TempS3** - Professional temporary file storage made simple. Built with ❤️ in Rust.
+TempS3 - Making temporary file storage simple, secure, and intelligent
+
+Built with ❤️ in Rust.
