@@ -1,0 +1,54 @@
+[package]
+name = "temps3"
+version = "0.1.0"
+edition = "2021"
+description = "A secure CLI application for temporary file storage using AWS S3 with automatic expiration, intelligent chunking, and local history tracking"
+authors = ["Jawad Shafique"]
+license = "MIT"
+homepage = "https://github.com/killcod3/temps3"
+repository = "https://github.com/killcod3/temps3"
+documentation = "https://github.com/killcod3/temps3#readme"
+keywords = ["aws", "s3", "cli", "storage", "temporary"]
+categories = ["command-line-utilities", "filesystem", "web-programming"]
+readme = "README.md"
+exclude = ["test-files/*", "*.md", "target/*"]
+
+[dependencies]
+# CLI Framework
+clap = { version = "4.0", features = ["derive", "cargo"] }
+# AWS SDK
+aws-config = "1.0"
+aws-sdk-s3 = "1.0"
+aws-credential-types = "1.0"
+# Async runtime
+tokio = { version = "1.0", features = ["full"] }
+# Database
+sqlx = { version = "0.7", features = ["runtime-tokio-rustls", "sqlite", "chrono", "uuid"] }
+# Serialization
+serde = { version = "1.0", features = ["derive"] }
+serde_yaml = "0.9"
+serde_json = "1.0"
+# Crypto and security
+ring = "0.17"
+aes-gcm = "0.10"
+base64 = "0.21"
+# Error handling
+anyhow = "1.0"
+thiserror = "1.0"
+# Utilities
+chrono = { version = "0.4", features = ["serde"] }
+uuid = { version = "1.0", features = ["v4", "serde"] }
+dirs = "5.0"
+indicatif = "0.17"
+log = "0.4"
+env_logger = "0.10"
+# Cross-platform keyring
+keyring = "2.0"
+# Progress bars and CLI utilities
+console = "0.15"
+dialoguer = "0.11"
+# Hex encoding for checksums
+hex = "0.4"
+
+[dev-dependencies]
+tempfile = "3.0"
