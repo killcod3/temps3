@@ -46,11 +46,11 @@ A secure CLI application for temporary file storage using AWS S3 with automatic 
 
 #### Linux/Unix (One-liner)
 ```bash
-curl -fsSL https://raw.githubusercontent.com/killcod3/temps3/main/install.sh | bash
+bash <(curl -fsSL https://raw.githubusercontent.com/killcod3/temps3/main/install.sh)
 ```
 
 #### Windows (PowerShell)
-```powershell
+```bash
 iwr -useb https://raw.githubusercontent.com/killcod3/temps3/main/install.ps1 | iex
 ```
 
