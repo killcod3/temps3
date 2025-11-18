@@ -82,9 +82,9 @@ Download the latest release for your platform from [GitHub Releases](https://git
 
 | Platform | File |
 |----------|------|
-| **Windows x64** | `temps3-v0.1.0-x86_64-pc-windows-gnu.zip` |
-| **Linux x64** | `temps3-v0.1.0-x86_64-unknown-linux-gnu.tar.gz` |
-| **Linux Static** | `temps3-v0.1.0-x86_64-unknown-linux-musl.tar.gz` |
+| **Windows x64** | `temps3-v0.1.1-x86_64-pc-windows-gnu.zip` |
+| **Linux x64** | `temps3-v0.1.1-x86_64-unknown-linux-gnu.tar.gz` |
+| **Linux Static** | `temps3-v0.1.1-x86_64-unknown-linux-musl.tar.gz` |
 
 #### Method 3: Build from Source
 
@@ -146,7 +146,6 @@ bucket_name: "temps3-e648efb2"             # Your unique S3 bucket name
 presigned_url_expiry_days: 7               # Max URL validity (AWS limit: 7 days)
 
 # Upload Configuration
-chunk_size_mb: 5                           # Multipart upload chunk size
 max_concurrent_uploads: 10                 # Concurrent chunks for multipart uploads
 max_retries: 3                             # Retry attempts for failed operations
 base_retry_delay_ms: 1000                  # Base delay between retries (exponential backoff)
@@ -163,7 +162,6 @@ log_level: "warn"                          # Log level: error, warn, info, debug
 - `encryption.key`: Encryption key for credentials (44 bytes)
 - `state.yml`: Application state information
 - `temps3.db`: SQLite database with upload history
-- `config.yml.backup`: Automatic backup of configuration
 
 ---
 
@@ -209,6 +207,8 @@ temps3 upload presentation.pptx --ttl 3d
 # Upload large file with verbose output
 temps3 upload backup.tar.gz --ttl 5d --verbose
 ```
+
+> Successful uploads automatically copy the generated presigned URL to your clipboard.
 
 **Output Example:**
 ```

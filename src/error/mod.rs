@@ -29,6 +29,9 @@ pub enum TempS3Error {
     #[error("Encryption error: {0}")]
     EncryptionError(String),
 
+    #[error("Clipboard error: {0}")]
+    ClipboardError(String),
+
     #[error("Validation error: {0}")]
     ValidationError(String),
 
@@ -54,19 +57,24 @@ pub enum TempS3Error {
 pub type Result<T> = std::result::Result<T, TempS3Error>;
 
 impl TempS3Error {
-
     /// Analyze AWS S3 error and convert to more specific credential error
     pub fn from_s3_error(error: aws_sdk_s3::Error) -> Self {
         let error_message = error.to_string().to_lowercase();
-        
+
         if error_message.contains("invalidaccesskeyid") || error_message.contains("access key") {
-            TempS3Error::InvalidCredentials("Your AWS Access Key ID is invalid or does not exist".to_string())
-        } else if error_message.contains("signaturedoesnotmatch") || error_message.contains("signature") {
+            TempS3Error::InvalidCredentials(
+                "Your AWS Access Key ID is invalid or does not exist".to_string(),
+            )
+        } else if error_message.contains("signaturedoesnotmatch")
+            || error_message.contains("signature")
+        {
             TempS3Error::InvalidCredentials("Your AWS Secret Access Key is incorrect".to_string())
         } else if error_message.contains("tokenrefresh") || error_message.contains("expired") {
             TempS3Error::ExpiredCredentials("Your AWS session token has expired".to_string())
         } else if error_message.contains("access denied") || error_message.contains("forbidden") {
-            TempS3Error::InsufficientPermissions("Your AWS credentials lack the required S3 permissions".to_string())
+            TempS3Error::InsufficientPermissions(
+                "Your AWS credentials lack the required S3 permissions".to_string(),
+            )
         } else {
             TempS3Error::S3Error(error)
         }
@@ -77,13 +85,15 @@ impl TempS3Error {
         // AWS SDK error handling - check for specific error types
         let error_str = error.to_string();
         let lower_error = error_str.to_lowercase();
-        
+
         // Check for specific AWS error patterns
         if lower_error.contains("throttling") || lower_error.contains("slow down") {
             "Rate limiting - S3 is throttling requests due to high volume".to_string()
         } else if lower_error.contains("internal error") || lower_error.contains("internalerror") {
             "S3 internal server error - temporary AWS issue".to_string()
-        } else if lower_error.contains("service unavailable") || lower_error.contains("serviceunavailable") {
+        } else if lower_error.contains("service unavailable")
+            || lower_error.contains("serviceunavailable")
+        {
             "S3 service temporarily unavailable".to_string()
         } else if lower_error.contains("timeout") || lower_error.contains("timed out") {
             "Network timeout - connection to S3 timed out".to_string()
@@ -115,18 +125,33 @@ impl TempS3Error {
     pub fn user_friendly_message(&self) -> String {
         match self {
             TempS3Error::InvalidCredentials(msg) => {
-                format!("❌ {}\n💡 Run 'temps3 init' to update your AWS credentials", msg)
+                format!(
+                    "❌ {}\n💡 Run 'temps3 init' to update your AWS credentials",
+                    msg
+                )
             }
             TempS3Error::ExpiredCredentials(msg) => {
-                format!("❌ {}\n💡 Run 'temps3 init' to refresh your AWS credentials", msg)
+                format!(
+                    "❌ {}\n💡 Run 'temps3 init' to refresh your AWS credentials",
+                    msg
+                )
             }
             TempS3Error::InsufficientPermissions(msg) => {
                 format!("❌ {}\n💡 Ensure your AWS user has S3 permissions (s3:GetObject, s3:PutObject, s3:CreateBucket, etc.)", msg)
             }
             TempS3Error::CredentialError(msg) => {
-                format!("❌ Credential error: {}\n💡 Run 'temps3 init' to set up your AWS credentials", msg)
+                format!(
+                    "❌ Credential error: {}\n💡 Run 'temps3 init' to set up your AWS credentials",
+                    msg
+                )
             }
-            _ => self.to_string()
+            TempS3Error::ClipboardError(msg) => {
+                format!(
+                    "⚠️  Clipboard error: {}\n💡 Ensure clipboard access is available in your current environment",
+                    msg
+                )
+            }
+            _ => self.to_string(),
         }
     }
 }
@@ -145,7 +170,10 @@ impl RetryManager {
         }
     }
 
-    pub async fn retry_with_backoff<F, Fut, T, E>(&self, mut operation: F) -> std::result::Result<T, E>
+    pub async fn retry_with_backoff<F, Fut, T, E>(
+        &self,
+        mut operation: F,
+    ) -> std::result::Result<T, E>
     where
         F: FnMut() -> Fut,
         Fut: std::future::Future<Output = std::result::Result<T, E>>,

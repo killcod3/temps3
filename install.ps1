@@ -8,7 +8,7 @@ param(
 
 # Configuration
 $Repo = "killcod3/temps3"
-$Version = "v0.1.0"
+$Version = "v0.1.1"
 $Platform = "x86_64-pc-windows-gnu"
 $Archive = "temps3-$Version-$Platform.zip"
 $Url = "https://github.com/$Repo/releases/download/$Version/$Archive"
@@ -108,7 +108,7 @@ try {
         }
         
         Write-Success "🎉 Installation complete!"
-        Write-Info "Run 'temps3 config' to get started."
+        Write-Info "Run 'temps3 init' to get started."
         
     } finally {
         # Cleanup

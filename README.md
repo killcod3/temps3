@@ -1,7 +1,7 @@
 # TempS3: Temporary File Storage on S3
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
-[![Version](https://img.shields.io/badge/version-0.1.0-blue.svg)](https://github.com/killcod3/temps3/releases)
+[![Version](https://img.shields.io/badge/version-0.1.1-blue.svg)](https://github.com/killcod3/temps3/releases)
 [![Platform](https://img.shields.io/badge/platform-Windows%20%7C%20Linux%20-lightgrey.svg)](https://github.com/killcod3/temps3/releases)
 
 A secure CLI application for temporary file storage using AWS S3 with automatic expiration, intelligent chunking, and local history tracking.
@@ -61,20 +61,20 @@ Download the latest release for your platform from [GitHub Releases](https://git
 
 | Platform | File | Notes |
 |----------|------|-------|
-| **Windows x64** | `temps3-v0.1.0-x86_64-pc-windows-gnu.zip` | Windows 7+ compatible |
-| **Linux x64** | `temps3-v0.1.0-x86_64-unknown-linux-gnu.tar.gz` | Most Linux distributions |
-| **Linux Static** | `temps3-v0.1.0-x86_64-unknown-linux-musl.tar.gz` | Alpine, Docker, embedded |
+| **Windows x64** | `temps3-v0.1.1-x86_64-pc-windows-gnu.zip` | Windows 7+ compatible |
+| **Linux x64** | `temps3-v0.1.1-x86_64-unknown-linux-gnu.tar.gz` | Most Linux distributions |
+| **Linux Static** | `temps3-v0.1.1-x86_64-unknown-linux-musl.tar.gz` | Alpine, Docker, embedded |
 
 #### Verify Download Integrity
 ```bash
 # Download checksums
-curl -fsSL https://github.com/killcod3/temps3/releases/download/v0.1.0/checksums.sha256
+curl -fsSL https://github.com/killcod3/temps3/releases/download/v0.1.1/checksums.sha256
 
 # Verify (Linux/macOS)
 sha256sum -c checksums.sha256
 
 # Verify (Windows PowerShell)
-Get-FileHash -Algorithm SHA256 temps3-v0.1.0-x86_64-pc-windows-gnu.zip
+Get-FileHash -Algorithm SHA256 temps3-v0.1.1-x86_64-pc-windows-gnu.zip
 ```
 
 ### 🌐 **Global Access Setup**
@@ -126,6 +126,8 @@ temps3 upload presentation.pptx --ttl 5d
 temps3 upload archive.zip --ttl 3d --verbose
 ```
 
+> Each successful upload automatically copies the presigned URL to your clipboard for quick sharing.
+
 ### 3. **Manage Your Uploads**
 ```bash
 # List all uploads
@@ -139,7 +141,7 @@ temps3 list --search "document" --ttl 1d
 ```
 
 ### Basic Commands
-- `temps3 config`: Initialize your configuration and AWS credentials
+- `temps3 init`: Initialize your configuration and AWS credentials
 - `temps3 upload <file>`: Upload a file with automatic expiration
 - `temps3 list`: List your upload history with filtering options
 - `temps3 credentials <action>`: Manage your stored AWS credentials

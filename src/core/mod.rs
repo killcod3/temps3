@@ -1,9 +1,10 @@
 use crate::cli::TtlDuration;
 use crate::config::{AppState, Config};
-use crate::credentials::{CredentialManager, prompt_for_credentials};
+use crate::credentials::{prompt_for_credentials, CredentialManager};
 use crate::error::{Result, TempS3Error};
 use crate::s3::S3Service;
 use crate::storage::{StorageManager, UploadRecord};
+use arboard::Clipboard;
 use console::{style, Term};
 use log::{info, warn};
 use std::path::PathBuf;
@@ -44,14 +45,20 @@ impl TempS3App {
 
     pub async fn init(&self) -> Result<()> {
         let term = Term::stdout();
-        
-        term.write_line(&format!("🚀 {}", style("Initializing TempS3").bold().blue()))?;
+
+        term.write_line(&format!(
+            "🚀 {}",
+            style("Initializing TempS3").bold().blue()
+        ))?;
         term.write_line("")?;
 
         // Check if already initialized
         if self.state.initialized {
             term.write_line("⚠️  TempS3 is already initialized.")?;
-            term.write_line("Use 'temps3 config' to modify configuration.")?;
+            term.write_line("To view configuration: temps3 config")?;
+            term.write_line(
+                "To modify: Edit the config file or run 'temps3 init' to reinitialize.",
+            )?;
             return Ok(());
         }
 
@@ -65,34 +72,52 @@ impl TempS3App {
                 } else {
                     term.write_line("❌ Stored credentials are invalid. Please provide new ones.")?;
                     let new_creds = prompt_for_credentials().await?;
-                    self.credential_manager.store_credentials(&new_creds).await?;
+                    self.credential_manager
+                        .store_credentials(&new_creds)
+                        .await?;
                     new_creds
                 }
             }
             None => {
                 term.write_line("🔑 No credentials found. Let's set them up.")?;
                 let creds = prompt_for_credentials().await?;
-                
+
                 term.write_line("🔍 Validating credentials...")?;
                 if !self.credential_manager.validate_credentials(&creds).await? {
                     return Err(TempS3Error::CredentialError(
                         "Invalid AWS credentials provided".to_string(),
                     ));
                 }
-                
+
                 self.credential_manager.store_credentials(&creds).await?;
-                term.write_line(&format!("✅ {}", style("Credentials stored securely").green()))?;
+                term.write_line(&format!(
+                    "✅ {}",
+                    style("Credentials stored securely").green()
+                ))?;
                 creds
             }
         };
 
-        // Step 2: Initialize S3 service
+        // Step 2: Update config region to match credentials
+        let mut updated_config = self.config.clone();
+        if updated_config.aws_region != credentials.region {
+            updated_config.aws_region = credentials.region.clone();
+            updated_config.save().await?;
+        }
+
+        // Step 3: Initialize S3 service
         let s3_service = S3Service::new(&credentials).await?;
 
-        // Step 3: Ensure bucket exists
-        term.write_line(&format!("🪣 Setting up S3 bucket: {}", self.config.bucket_name))?;
-        
-        match s3_service.ensure_bucket_exists(&self.config.bucket_name).await {
+        // Step 4: Ensure bucket exists
+        term.write_line(&format!(
+            "🪣 Setting up S3 bucket: {}",
+            updated_config.bucket_name
+        ))?;
+
+        match s3_service
+            .ensure_bucket_exists(&updated_config.bucket_name)
+            .await
+        {
             Ok(_) => {
                 term.write_line(&format!("✅ {}", style("Bucket ready").green()))?;
             }
@@ -102,37 +127,49 @@ impl TempS3App {
                 term.write_line(&msg)?;
                 term.write_line("")?;
                 term.write_line("💡 Here are some alternative bucket names you can use:")?;
-                
+
                 for i in 1..=3 {
                     let alternative = crate::config::generate_unique_bucket_name();
                     term.write_line(&format!("   {}. {}", i, alternative))?;
                 }
-                
+
                 term.write_line("")?;
                 term.write_line("To use an alternative bucket name:")?;
-                term.write_line(&format!("   📝 Edit: {}", crate::config::get_config_path().display()))?;
+                term.write_line(&format!(
+                    "   📝 Edit: {}",
+                    crate::config::get_config_path().display()
+                ))?;
                 term.write_line("   🔄 Update the 'bucket_name' field")?;
                 term.write_line("   🚀 Run 'temps3 init' again")?;
-                
-                return Err(TempS3Error::ConfigError("Bucket setup failed. Please update the bucket name and try again.".to_string()));
+
+                return Err(TempS3Error::ConfigError(
+                    "Bucket setup failed. Please update the bucket name and try again.".to_string(),
+                ));
             }
             Err(e) => return Err(e),
         }
 
-        // Step 4: Configure lifecycle policies
+        // Step 5: Configure lifecycle policies
         term.write_line("⏰ Configuring automatic expiration policies...")?;
-        s3_service.configure_lifecycle_policies(&self.config.bucket_name).await?;
-        term.write_line(&format!("✅ {}", style("Lifecycle policies configured").green()))?;
-
-        // Step 5: Check permissions
-        term.write_line("🔒 Checking S3 permissions...")?;
-        let missing_permissions = self.credential_manager
-            .check_permissions(&credentials, &self.config.bucket_name)
+        s3_service
+            .configure_lifecycle_policies(&updated_config.bucket_name)
             .await?;
-        
+        term.write_line(&format!(
+            "✅ {}",
+            style("Lifecycle policies configured").green()
+        ))?;
+
+        // Step 6: Check permissions
+        term.write_line("🔒 Checking S3 permissions...")?;
+        let missing_permissions = self
+            .credential_manager
+            .check_permissions(&credentials, &updated_config.bucket_name)
+            .await?;
+
         if !missing_permissions.is_empty() {
             warn!("Missing permissions: {:?}", missing_permissions);
-            term.write_line(&format!("⚠️  {}: {:?}", 
+            term.write_line(&format!(
+                "⚠️  {}: {:?}",
                 style("Missing permissions").yellow(),
                 missing_permissions
             ))?;
@@ -141,7 +178,7 @@ impl TempS3App {
             term.write_line(&format!("✅ {}", style("All permissions verified").green()))?;
         }
 
-        // Step 6: Update state
+        // Step 7: Update state
         let mut new_state = self.state.clone();
         new_state.initialized = true;
         new_state.last_bucket_check = Some(chrono::Utc::now());
@@ -149,7 +186,10 @@ impl TempS3App {
         new_state.save().await?;
 
         term.write_line("")?;
-        term.write_line(&format!("🎉 {}", style("TempS3 initialization complete!").bold().green()))?;
+        term.write_line(&format!(
+            "🎉 {}",
+            style("TempS3 initialization complete!").bold().green()
+        ))?;
         term.write_line("")?;
         term.write_line("You can now upload files using:")?;
         term.write_line(&format!("  {}", style("temps3 upload <file_path>").cyan()))?;
@@ -170,9 +210,10 @@ impl TempS3App {
 
         // Validate file exists and is readable
         if !file_path.exists() {
-            return Err(TempS3Error::FileSystemError(
-                std::io::Error::new(std::io::ErrorKind::NotFound, "File not found"),
-            ));
+            return Err(TempS3Error::FileSystemError(std::io::Error::new(
+                std::io::ErrorKind::NotFound,
+                "File not found",
+            )));
         }
 
         let file_name = file_path
@@ -191,7 +232,7 @@ impl TempS3App {
 
         // Generate S3 key
         let s3_key = S3Service::generate_s3_key(&file_name);
-        
+
         if verbose {
             term.write_line(&format!("🔑 S3 Key: {}", s3_key))?;
         }
@@ -246,17 +287,46 @@ impl TempS3App {
 
         // Display results
         term.write_line("")?;
-        term.write_line(&format!("✅ {}", style("Upload successful!").bold().green()))?;
+        term.write_line(&format!(
+            "✅ {}",
+            style("Upload successful!").bold().green()
+        ))?;
         term.write_line("")?;
         term.write_line(&format!("📊 File size: {}", format_file_size(file_size)))?;
-        term.write_line(&format!("🏷️  TTL: {} (expires in {} days)", ttl.as_tag(), ttl.as_days()))?;
-        term.write_line(&format!("🔗 Download URL: {}", style(&presigned_url).blue().underlined()))?;
-        term.write_line(&format!("⏰ URL expires: {}", url_expiry.format("%Y-%m-%d %H:%M:%S UTC")))?;
+        term.write_line(&format!(
+            "🏷️  TTL: {} (expires in {} days)",
+            ttl.as_tag(),
+            ttl.as_days()
+        ))?;
+        term.write_line(&format!(
+            "🔗 Download URL: {}",
+            style(&presigned_url).blue().underlined()
+        ))?;
+        term.write_line(&format!(
+            "⏰ URL expires: {}",
+            url_expiry.format("%Y-%m-%d %H:%M:%S UTC")
+        ))?;
         term.write_line("")?;
 
         if verbose {
             term.write_line(&format!("🆔 Upload ID: {}", upload_record.id))?;
             term.write_line(&format!("🔐 Checksum: {}", upload_record.checksum))?;
+        }
+
+        match copy_text_to_clipboard(&presigned_url) {
+            Ok(_) => {
+                term.write_line(&format!(
+                    "📋 {}",
+                    style("Download URL copied to clipboard").green()
+                ))?;
+            }
+            Err(err) => {
+                warn!("Failed to copy URL to clipboard: {}", err);
+                term.write_line(&format!(
+                    "⚠️  Could not copy URL: {}",
+                    err.user_friendly_message()
+                ))?;
+            }
         }
 
         Ok(())
@@ -277,23 +347,33 @@ impl TempS3App {
 
         // Validate inputs
         if limit == 0 || limit > 100 {
-            return Err(TempS3Error::ValidationError("Limit must be between 1 and 100".to_string()));
+            return Err(TempS3Error::ValidationError(
+                "Limit must be between 1 and 100".to_string(),
+            ));
         }
-        
+
         if page == 0 {
-            return Err(TempS3Error::ValidationError("Page must be 1 or greater".to_string()));
+            return Err(TempS3Error::ValidationError(
+                "Page must be 1 or greater".to_string(),
+            ));
         }
-        
+
         if !["active", "expired", "all"].contains(&status_filter.as_str()) {
-            return Err(TempS3Error::ValidationError("Status must be 'active', 'expired', or 'all'".to_string()));
+            return Err(TempS3Error::ValidationError(
+                "Status must be 'active', 'expired', or 'all'".to_string(),
+            ));
         }
-        
+
         if !["date", "size", "name", "expiry"].contains(&sort_by.as_str()) {
-            return Err(TempS3Error::ValidationError("Sort must be 'date', 'size', 'name', or 'expiry'".to_string()));
+            return Err(TempS3Error::ValidationError(
+                "Sort must be 'date', 'size', 'name', or 'expiry'".to_string(),
+            ));
         }
-        
+
         if !["asc", "desc"].contains(&order.as_str()) {
-            return Err(TempS3Error::ValidationError("Order must be 'asc' or 'desc'".to_string()));
+            return Err(TempS3Error::ValidationError(
+                "Order must be 'asc' or 'desc'".to_string(),
+            ));
         }
 
         // Build filter description
@@ -307,28 +387,32 @@ impl TempS3App {
         if let Some(ref pattern) = search_pattern {
             filter_parts.push(format!("Search: \"{}\"", pattern));
         }
-        
+
         let filter_desc = if filter_parts.is_empty() {
             "All uploads".to_string()
         } else {
             format!("Filtered by: {}", filter_parts.join(", "))
         };
 
-        term.write_line(&format!("📋 {} ({})", 
+        term.write_line(&format!(
+            "📋 {} ({})",
             style("Upload History").bold().blue(),
             style(&filter_desc).dim()
         ))?;
         term.write_line("")?;
 
-        let (uploads, total_count) = self.storage_manager.list_uploads_advanced(
-            ttl_filter.as_deref(),
-            &status_filter,
-            limit,
-            page,
-            &sort_by,
-            &order,
-            search_pattern.as_deref(),
-        ).await?;
+        let (uploads, total_count) = self
+            .storage_manager
+            .list_uploads_advanced(
+                ttl_filter.as_deref(),
+                &status_filter,
+                limit,
+                page,
+                &sort_by,
+                &order,
+                search_pattern.as_deref(),
+            )
+            .await?;
 
         if uploads.is_empty() {
             if total_count == 0 {
@@ -346,8 +430,9 @@ impl TempS3App {
         let total_pages = (total_count + limit as u64 - 1) / limit as u64;
         let start_item = ((page - 1) * limit) + 1;
         let end_item = std::cmp::min(page * limit, total_count as u32);
-        
-        term.write_line(&format!("📄 Page {} of {} ({}-{} of {} uploads)", 
+
+        term.write_line(&format!(
+            "📄 Page {} of {} ({}-{} of {} uploads)",
             page, total_pages, start_item, end_item, total_count
         ))?;
         term.write_line("")?;
@@ -361,40 +446,55 @@ impl TempS3App {
             };
 
             let item_number = start_item + index as u32;
-            term.write_line(&format!("{}. {} - {}", 
+            term.write_line(&format!(
+                "{}. {} - {}",
                 item_number,
                 style(&upload.file_name).bold(),
                 status
             ))?;
-            
+
             if verbose {
                 term.write_line(&format!("   🆔 ID: {}", style(&upload.id).dim()))?;
                 term.write_line(&format!("   🗂️  S3 Key: {}", style(&upload.s3_key).dim()))?;
             }
-            
-            term.write_line(&format!("   📁 Size: {}", format_file_size(upload.file_size)))?;
+
+            term.write_line(&format!(
+                "   📁 Size: {}",
+                format_file_size(upload.file_size)
+            ))?;
             term.write_line(&format!("   ⏱️  TTL: {}", upload.ttl_tag))?;
-            term.write_line(&format!("   📅 Uploaded: {}", 
+            term.write_line(&format!(
+                "   📅 Uploaded: {}",
                 upload.upload_date.format("%Y-%m-%d %H:%M:%S UTC")
             ))?;
-            
+
             if upload.url_expiry > chrono::Utc::now() {
                 if verbose {
-                    term.write_line(&format!("   🔗 URL: {}", style(&upload.presigned_url).blue().underlined()))?;
+                    term.write_line(&format!(
+                        "   🔗 URL: {}",
+                        style(&upload.presigned_url).blue().underlined()
+                    ))?;
                 } else {
-                    term.write_line(&format!("   🔗 URL: {}", style("Available (use --verbose to show)").blue()))?;
+                    term.write_line(&format!(
+                        "   🔗 URL: {}",
+                        style("Available (use --verbose to show)").blue()
+                    ))?;
                 }
-                term.write_line(&format!("   ⏰ Expires: {}", 
+                term.write_line(&format!(
+                    "   ⏰ Expires: {}",
                     upload.url_expiry.format("%Y-%m-%d %H:%M:%S UTC")
                 ))?;
             } else {
                 term.write_line(&format!("   ❌ {}", style("URL expired").red()))?;
             }
-            
+
             if verbose {
-                term.write_line(&format!("   🔐 Checksum: {}", style(&upload.checksum).dim()))?;
+                term.write_line(&format!(
+                    "   🔐 Checksum: {}",
+                    style(&upload.checksum).dim()
+                ))?;
             }
-            
+
             term.write_line("")?;
         }
 
@@ -425,30 +525,49 @@ impl TempS3App {
     pub async fn config(&self, check_credentials: bool) -> Result<()> {
         let term = Term::stdout();
 
-        term.write_line(&format!("⚙️  {}", style("TempS3 Configuration").bold().blue()))?;
+        term.write_line(&format!(
+            "⚙️  {}",
+            style("TempS3 Configuration").bold().blue()
+        ))?;
         term.write_line("")?;
 
         // Display current configuration
         term.write_line(&format!("📍 AWS Region: {}", self.config.aws_region))?;
         term.write_line(&format!("🪣 Bucket Name: {}", self.config.bucket_name))?;
-        term.write_line(&format!("⏰ Presigned URL Expiry: {} days", self.config.presigned_url_expiry_days))?;
-        term.write_line(&format!(" Max Concurrent Uploads: {}", self.config.max_concurrent_uploads))?;
+        term.write_line(&format!(
+            "⏰ Presigned URL Expiry: {} days",
+            self.config.presigned_url_expiry_days
+        ))?;
+        term.write_line(&format!(
+            " Max Concurrent Uploads: {}",
+            self.config.max_concurrent_uploads
+        ))?;
         term.write_line(&format!("🔁 Max Retries: {}", self.config.max_retries))?;
-        term.write_line(&format!("💾 Database Path: {}", self.config.database_path.display()))?;
+        term.write_line(&format!(
+            "💾 Database Path: {}",
+            self.config.database_path.display()
+        ))?;
         term.write_line(&format!("📊 Log Level: {}", self.config.log_level))?;
         term.write_line("")?;
 
         // Display state information
         term.write_line(&format!("📋 {}", style("Application State").bold()))?;
-        term.write_line(&format!("✅ Initialized: {}", 
+        term.write_line(&format!(
+            "✅ Initialized: {}",
             if self.state.initialized { "Yes" } else { "No" }
         ))?;
-        term.write_line(&format!("🔐 Credentials Validated: {}", 
-            if self.state.credentials_validated { "Yes" } else { "No" }
+        term.write_line(&format!(
+            "🔐 Credentials Validated: {}",
+            if self.state.credentials_validated {
+                "Yes"
+            } else {
+                "No"
+            }
         ))?;
-        
+
         if let Some(last_check) = self.state.last_bucket_check {
-            term.write_line(&format!("🕐 Last Bucket Check: {}", 
+            term.write_line(&format!(
+                "🕐 Last Bucket Check: {}",
                 last_check.format("%Y-%m-%d %H:%M:%S UTC")
             ))?;
         }
@@ -456,28 +575,43 @@ impl TempS3App {
         // If check_credentials flag is provided, run credential health check
         if check_credentials {
             term.write_line("")?;
-            term.write_line(&format!("🔍 {}", style("Credential Health Check").bold().yellow()))?;
-            
-            match self.credential_manager.credential_health_check(&self.config.bucket_name).await {
+            term.write_line(&format!(
+                "🔍 {}",
+                style("Credential Health Check").bold().yellow()
+            ))?;
+
+            match self
+                .credential_manager
+                .credential_health_check(&self.config.bucket_name)
+                .await
+            {
                 Ok(status) => {
                     if status.valid {
-                        term.write_line(&format!("✅ {}", style("AWS credentials are valid").green()))?;
-                        term.write_line(&format!("🪣 Bucket access: {}", 
-                            if status.can_access_bucket { 
-                                style("OK").green() 
-                            } else { 
-                                style("Bucket not found (will be created)").yellow() 
+                        term.write_line(&format!(
+                            "✅ {}",
+                            style("AWS credentials are valid").green()
+                        ))?;
+                        term.write_line(&format!(
+                            "🪣 Bucket access: {}",
+                            if status.can_access_bucket {
+                                style("OK").green()
+                            } else {
+                                style("Bucket not found (will be created)").yellow()
                             }
                         ))?;
-                        term.write_line(&format!("📝 Required permissions: {}", 
-                            if status.has_required_permissions { 
-                                style("OK").green() 
-                            } else { 
-                                style("Limited (may affect some operations)").yellow() 
+                        term.write_line(&format!(
+                            "📝 Required permissions: {}",
+                            if status.has_required_permissions {
+                                style("OK").green()
+                            } else {
+                                style("Limited (may affect some operations)").yellow()
                             }
                         ))?;
                     } else {
-                        term.write_line(&format!("❌ {}", style("Credential validation failed").red()))?;
+                        term.write_line(&format!(
+                            "❌ {}",
+                            style("Credential validation failed").red()
+                        ))?;
                         if let Some(error) = status.error_message {
                             term.write_line(&format!("   Error: {}", error))?;
                         }
@@ -487,14 +621,20 @@ impl TempS3App {
                     }
                 }
                 Err(e) => {
-                    term.write_line(&format!("❌ Failed to check credentials: {}", e.user_friendly_message()))?;
+                    term.write_line(&format!(
+                        "❌ Failed to check credentials: {}",
+                        e.user_friendly_message()
+                    ))?;
                 }
             }
         }
 
         term.write_line("")?;
         term.write_line("To modify configuration, edit the config file at:")?;
-        term.write_line(&format!("📁 {}", crate::config::get_config_path().display()))?;
+        term.write_line(&format!(
+            "📁 {}",
+            crate::config::get_config_path().display()
+        ))?;
 
         Ok(())
     }
@@ -516,10 +656,20 @@ impl TempS3App {
 
         term.write_line(&format!("📊 Database contains {} uploads:", total_uploads))?;
         term.write_line(&format!("   🟢 Active: {}", active_uploads))?;
-        term.write_line(&format!("   🔴 Expired: {}", total_uploads - active_uploads))?;
+        term.write_line(&format!(
+            "   🔴 Expired: {}",
+            total_uploads - active_uploads
+        ))?;
         term.write_line("")?;
 
-        term.write_line(&format!("⚠️  {}", style("WARNING: This will permanently delete ALL upload records from the local database!").bold().red()))?;
+        term.write_line(&format!(
+            "⚠️  {}",
+            style(
+                "WARNING: This will permanently delete ALL upload records from the local database!"
+            )
+            .bold()
+            .red()
+        ))?;
         term.write_line("   • Download URLs will be lost")?;
         term.write_line("   • Upload history will be erased")?;
         term.write_line("   • Files in S3 will NOT be deleted")?;
@@ -529,7 +679,7 @@ impl TempS3App {
         if !force {
             term.write_line("Type 'PURGE' to confirm database purge:")?;
             let input = self.read_user_confirmation().await?;
-            
+
             if input != "PURGE" {
                 term.write_line("❌ Operation cancelled.")?;
                 return Ok(());
@@ -540,7 +690,10 @@ impl TempS3App {
         let deleted_count = self.storage_manager.purge_all_uploads().await?;
 
         term.write_line("")?;
-        term.write_line(&format!("✅ {}", style("Database purged successfully!").bold().green()))?;
+        term.write_line(&format!(
+            "✅ {}",
+            style("Database purged successfully!").bold().green()
+        ))?;
         term.write_line(&format!("   📊 Deleted {} upload records", deleted_count))?;
 
         Ok(())
@@ -570,10 +723,16 @@ impl TempS3App {
         term.write_line(&format!("   🪣 Bucket: {}", self.config.bucket_name))?;
         term.write_line(&format!("   📊 Database uploads: {}", total_uploads))?;
         term.write_line(&format!("   🟢 Active: {}", active_uploads))?;
-        term.write_line(&format!("   🔴 Expired: {}", total_uploads - active_uploads))?;
+        term.write_line(&format!(
+            "   🔴 Expired: {}",
+            total_uploads - active_uploads
+        ))?;
         term.write_line("")?;
 
-        term.write_line(&format!("⚠️  {}", style("WARNING: This will:").bold().red()))?;
+        term.write_line(&format!(
+            "⚠️  {}",
+            style("WARNING: This will:").bold().red()
+        ))?;
         term.write_line("   • Delete ALL files from the S3 bucket (temps3/ prefix)")?;
         term.write_line("   • Mark all local database entries as expired")?;
         term.write_line("   • Make all existing download URLs invalid")?;
@@ -582,9 +741,12 @@ impl TempS3App {
 
         // Confirmation unless force flag is used
         if !force {
-            term.write_line(&format!("Type 'EMPTY {}' to confirm bucket emptying:", self.config.bucket_name))?;
+            term.write_line(&format!(
+                "Type 'EMPTY {}' to confirm bucket emptying:",
+                self.config.bucket_name
+            ))?;
             let input = self.read_user_confirmation().await?;
-            
+
             let expected = format!("EMPTY {}", self.config.bucket_name);
             if input != expected {
                 term.write_line("❌ Operation cancelled.")?;
@@ -601,8 +763,14 @@ impl TempS3App {
         let expired_count = self.storage_manager.expire_all_uploads().await?;
 
         term.write_line("")?;
-        term.write_line(&format!("✅ {}", style("Bucket emptied successfully!").bold().green()))?;
-        term.write_line(&format!("   🗑️  Deleted {} objects from S3", deleted_objects))?;
+        term.write_line(&format!(
+            "✅ {}",
+            style("Bucket emptied successfully!").bold().green()
+        ))?;
+        term.write_line(&format!(
+            "   🗑️  Deleted {} objects from S3",
+            deleted_objects
+        ))?;
         term.write_line(&format!("   ⏰ Expired {} database entries", expired_count))?;
 
         Ok(())
@@ -611,7 +779,10 @@ impl TempS3App {
     pub async fn update_credentials(&self, skip_validation: bool) -> Result<()> {
         let term = Term::stdout();
 
-        term.write_line(&format!("🔑 {}", style("Update AWS Credentials").bold().blue()))?;
+        term.write_line(&format!(
+            "🔑 {}",
+            style("Update AWS Credentials").bold().blue()
+        ))?;
         term.write_line("")?;
 
         // Show current credential status if available
@@ -629,19 +800,35 @@ impl TempS3App {
         // Validate credentials unless skipped
         if !skip_validation {
             term.write_line("🔍 Validating new credentials...")?;
-            if !self.credential_manager.validate_credentials(&new_credentials).await? {
+            if !self
+                .credential_manager
+                .validate_credentials(&new_credentials)
+                .await?
+            {
                 return Err(TempS3Error::CredentialError(
-                    "Invalid AWS credentials provided. Use --skip-validation to store anyway.".to_string(),
+                    "Invalid AWS credentials provided. Use --skip-validation to store anyway."
+                        .to_string(),
                 ));
             }
-            term.write_line(&format!("✅ {}", style("Credentials validated successfully").green()))?;
+            term.write_line(&format!(
+                "✅ {}",
+                style("Credentials validated successfully").green()
+            ))?;
         } else {
-            term.write_line(&format!("⚠️  {}", style("Skipping validation as requested").yellow()))?;
+            term.write_line(&format!(
+                "⚠️  {}",
+                style("Skipping validation as requested").yellow()
+            ))?;
         }
 
         // Store new credentials
-        self.credential_manager.store_credentials(&new_credentials).await?;
-        term.write_line(&format!("✅ {}", style("Credentials updated and stored securely").green()))?;
+        self.credential_manager
+            .store_credentials(&new_credentials)
+            .await?;
+        term.write_line(&format!(
+            "✅ {}",
+            style("Credentials updated and stored securely").green()
+        ))?;
 
         // Update application state
         if let Ok(mut state) = AppState::load().await {
@@ -660,7 +847,10 @@ impl TempS3App {
     pub async fn test_credentials(&self) -> Result<()> {
         let term = Term::stdout();
 
-        term.write_line(&format!("🧪 {}", style("Test AWS Credentials").bold().blue()))?;
+        term.write_line(&format!(
+            "🧪 {}",
+            style("Test AWS Credentials").bold().blue()
+        ))?;
         term.write_line("")?;
 
         // Load credentials
@@ -674,9 +864,10 @@ impl TempS3App {
         };
 
         term.write_line("📋 Credential Information:")?;
-        term.write_line(&format!("   🔑 Access Key: {}...{}", 
+        term.write_line(&format!(
+            "   🔑 Access Key: {}...{}",
             &credentials.access_key_id[..4],
-            &credentials.access_key_id[credentials.access_key_id.len()-4..]
+            &credentials.access_key_id[credentials.access_key_id.len() - 4..]
         ))?;
         term.write_line(&format!("   🌍 Region: {}", credentials.region))?;
         if credentials.session_token.is_some() {
@@ -686,29 +877,42 @@ impl TempS3App {
 
         // Run comprehensive health check
         term.write_line("🔍 Running credential health check...")?;
-        match self.credential_manager.credential_health_check(&self.config.bucket_name).await {
+        match self
+            .credential_manager
+            .credential_health_check(&self.config.bucket_name)
+            .await
+        {
             Ok(status) => {
                 if status.valid {
-                    term.write_line(&format!("✅ {}", style("Credentials are valid and working").bold().green()))?;
-                    
+                    term.write_line(&format!(
+                        "✅ {}",
+                        style("Credentials are valid and working").bold().green()
+                    ))?;
+
                     term.write_line("")?;
                     term.write_line("📊 Detailed Status:")?;
-                    term.write_line(&format!("   🪣 Bucket Access: {}", 
-                        if status.can_access_bucket { 
-                            style("✅ Can access bucket").green() 
-                        } else { 
-                            style("⚠️  Bucket not found (will be created on first upload)").yellow() 
+                    term.write_line(&format!(
+                        "   🪣 Bucket Access: {}",
+                        if status.can_access_bucket {
+                            style("✅ Can access bucket").green()
+                        } else {
+                            style("⚠️  Bucket not found (will be created on first upload)").yellow()
                         }
                     ))?;
-                    term.write_line(&format!("   🔐 Permissions: {}", 
-                        if status.has_required_permissions { 
-                            style("✅ All required permissions available").green() 
-                        } else { 
-                            style("⚠️  Some permissions missing (may affect functionality)").yellow() 
+                    term.write_line(&format!(
+                        "   🔐 Permissions: {}",
+                        if status.has_required_permissions {
+                            style("✅ All required permissions available").green()
+                        } else {
+                            style("⚠️  Some permissions missing (may affect functionality)")
+                                .yellow()
                         }
                     ))?;
                 } else {
-                    term.write_line(&format!("❌ {}", style("Credential validation failed").bold().red()))?;
+                    term.write_line(&format!(
+                        "❌ {}",
+                        style("Credential validation failed").bold().red()
+                    ))?;
                     if let Some(error) = &status.error_message {
                         term.write_line(&format!("   📝 Error: {}", error))?;
                     }
@@ -734,7 +938,10 @@ impl TempS3App {
     pub async fn remove_credentials(&self, force: bool) -> Result<()> {
         let term = Term::stdout();
 
-        term.write_line(&format!("🗑️  {}", style("Remove AWS Credentials").bold().red()))?;
+        term.write_line(&format!(
+            "🗑️  {}",
+            style("Remove AWS Credentials").bold().red()
+        ))?;
         term.write_line("")?;
 
         // Check if credentials exist
@@ -749,17 +956,24 @@ impl TempS3App {
         }
 
         term.write_line("")?;
-        term.write_line(&format!("⚠️  {}", style("WARNING: This will remove all stored AWS credentials!").bold().red()))?;
+        term.write_line(&format!(
+            "⚠️  {}",
+            style("WARNING: This will remove all stored AWS credentials!")
+                .bold()
+                .red()
+        ))?;
         term.write_line("   • You will need to set up credentials again")?;
         term.write_line("   • Existing upload URLs will remain valid until expiry")?;
-        term.write_line("   • You won't be able to upload new files until credentials are restored")?;
+        term.write_line(
+            "   • You won't be able to upload new files until credentials are restored",
+        )?;
         term.write_line("")?;
 
         // Confirmation unless force flag is used
         if !force {
             term.write_line("Type 'REMOVE' to confirm credential removal:")?;
             let input = self.read_user_confirmation().await?;
-            
+
             if input != "REMOVE" {
                 term.write_line("❌ Operation cancelled.")?;
                 return Ok(());
@@ -772,7 +986,10 @@ impl TempS3App {
             term.write_line(&format!("⚠️  Warning: Failed to remove credentials: {}", e))?;
             term.write_line("   Credentials may still be stored")?;
         } else {
-            term.write_line(&format!("✅ {}", style("Credentials removed successfully").green()))?;
+            term.write_line(&format!(
+                "✅ {}",
+                style("Credentials removed successfully").green()
+            ))?;
         }
 
         // Update application state
@@ -790,11 +1007,11 @@ impl TempS3App {
     }
 
     async fn get_s3_service(&self) -> Result<&S3Service> {
-        self.s3_service
-            .as_ref()
-            .ok_or_else(|| TempS3Error::ConfigError(
+        self.s3_service.as_ref().ok_or_else(|| {
+            TempS3Error::ConfigError(
                 "S3 service not initialized. Run 'temps3 init' first.".to_string(),
-            ))
+            )
+        })
     }
 
     /// Async helper function to read user confirmation input without blocking the runtime
@@ -802,10 +1019,12 @@ impl TempS3App {
         let stdin = tokio::io::stdin();
         let mut reader = BufReader::new(stdin);
         let mut input = String::new();
-        
-        reader.read_line(&mut input).await
+
+        reader
+            .read_line(&mut input)
+            .await
             .map_err(|e| TempS3Error::FileSystemError(e))?;
-        
+
         Ok(input.trim().to_string())
     }
 }
@@ -821,6 +1040,17 @@ fn format_file_size(bytes: i64) -> String {
     }
 
     format!("{:.2} {}", size, UNITS[unit_index])
+}
+
+fn copy_text_to_clipboard(contents: &str) -> Result<()> {
+    let mut clipboard = Clipboard::new()
+        .map_err(|e| TempS3Error::ClipboardError(format!("Clipboard unavailable: {}", e)))?;
+
+    clipboard
+        .set_text(contents.to_string())
+        .map_err(|e| TempS3Error::ClipboardError(format!("Failed to copy to clipboard: {}", e)))?;
+
+    Ok(())
 }
 
 #[cfg(test)]

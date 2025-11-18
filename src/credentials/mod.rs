@@ -5,7 +5,7 @@ use aes_gcm::{
 };
 use aws_config::{BehaviorVersion, Region};
 use aws_credential_types::Credentials;
-use aws_sdk_s3::{Client as S3Client, primitives::ByteStream};
+use aws_sdk_s3::{primitives::ByteStream, Client as S3Client};
 use base64::{engine::general_purpose, Engine as _};
 use keyring::Entry;
 use log::{debug, info, warn};
@@ -45,7 +45,7 @@ pub struct CredentialManager {
 impl CredentialManager {
     pub fn new() -> Result<Self> {
         let config_dir = crate::config::get_config_dir();
-        
+
         // Try to create keyring entries, but fall back to file storage if it fails
         let (keyring_entry, encryption_entry, use_file_storage) = match (
             Entry::new(SERVICE_NAME, CREDENTIALS_KEY),
@@ -65,7 +65,10 @@ impl CredentialManager {
                 }
             }
             (Err(e1), _) | (_, Err(e1)) => {
-                warn!("Failed to create keyring entries ({}), using file storage", e1);
+                warn!(
+                    "Failed to create keyring entries ({}), using file storage",
+                    e1
+                );
                 (None, None, true)
             }
         };
@@ -96,15 +99,19 @@ impl CredentialManager {
         if self.use_file_storage {
             // Store in encrypted file
             let creds_path = self.config_dir.join("credentials.enc");
-            fs::write(&creds_path, encoded)
-                .map_err(|e| TempS3Error::CredentialError(format!("Failed to store credentials to file: {}", e)))?;
+            fs::write(&creds_path, encoded).map_err(|e| {
+                TempS3Error::CredentialError(format!("Failed to store credentials to file: {}", e))
+            })?;
         } else {
             // Store in keyring
             if let Some(ref entry) = self.keyring_entry {
-                entry.set_password(&encoded)
-                    .map_err(|e| TempS3Error::CredentialError(format!("Failed to store credentials: {}", e)))?;
+                entry.set_password(&encoded).map_err(|e| {
+                    TempS3Error::CredentialError(format!("Failed to store credentials: {}", e))
+                })?;
             } else {
-                return Err(TempS3Error::CredentialError("Keyring entry not available".to_string()));
+                return Err(TempS3Error::CredentialError(
+                    "Keyring entry not available".to_string(),
+                ));
             }
         }
 
@@ -124,7 +131,12 @@ impl CredentialManager {
                     debug!("No stored credentials file found");
                     return Ok(None);
                 }
-                Err(e) => return Err(TempS3Error::CredentialError(format!("Failed to read credentials file: {}", e))),
+                Err(e) => {
+                    return Err(TempS3Error::CredentialError(format!(
+                        "Failed to read credentials file: {}",
+                        e
+                    )))
+                }
             }
         } else {
             // Load from keyring
@@ -135,44 +147,59 @@ impl CredentialManager {
                         debug!("No stored credentials found in keyring");
                         return Ok(None);
                     }
-                    Err(e) => return Err(TempS3Error::CredentialError(format!("Failed to load credentials: {}", e))),
+                    Err(e) => {
+                        return Err(TempS3Error::CredentialError(format!(
+                            "Failed to load credentials: {}",
+                            e
+                        )))
+                    }
                 }
             } else {
-                return Err(TempS3Error::CredentialError("Keyring entry not available".to_string()));
+                return Err(TempS3Error::CredentialError(
+                    "Keyring entry not available".to_string(),
+                ));
             }
         };
 
         let encryption_key = self.get_encryption_key()?;
-        let encrypted = general_purpose::STANDARD.decode(encoded)
-            .map_err(|e| TempS3Error::CredentialError(format!("Failed to decode credentials: {}", e)))?;
-        
+        let encrypted = general_purpose::STANDARD.decode(encoded).map_err(|e| {
+            TempS3Error::CredentialError(format!("Failed to decode credentials: {}", e))
+        })?;
+
         let decrypted = self.decrypt_data(&encrypted, &encryption_key)?;
         let credentials: AwsCredentials = serde_json::from_str(&decrypted)?;
-        
+
         debug!("Credentials loaded successfully");
         Ok(Some(credentials))
     }
 
     pub async fn delete_credentials(&self) -> Result<()> {
         info!("Deleting stored credentials");
-        
+
         if self.use_file_storage {
             // Delete encrypted file
             let creds_path = self.config_dir.join("credentials.enc");
             if creds_path.exists() {
-                fs::remove_file(&creds_path)
-                    .map_err(|e| TempS3Error::CredentialError(format!("Failed to delete credentials file: {}", e)))?;
+                fs::remove_file(&creds_path).map_err(|e| {
+                    TempS3Error::CredentialError(format!(
+                        "Failed to delete credentials file: {}",
+                        e
+                    ))
+                })?;
             }
         } else {
             // Delete from keyring
             if let Some(ref entry) = self.keyring_entry {
-                entry.delete_password()
-                    .map_err(|e| TempS3Error::CredentialError(format!("Failed to delete credentials: {}", e)))?;
+                entry.delete_password().map_err(|e| {
+                    TempS3Error::CredentialError(format!("Failed to delete credentials: {}", e))
+                })?;
             } else {
-                return Err(TempS3Error::CredentialError("Keyring entry not available".to_string()));
+                return Err(TempS3Error::CredentialError(
+                    "Keyring entry not available".to_string(),
+                ));
             }
         }
-        
+
         info!("Credentials deleted successfully");
         Ok(())
     }
@@ -222,7 +249,9 @@ impl CredentialManager {
                     can_access_bucket: false,
                     has_required_permissions: false,
                     error_message: Some("No stored AWS credentials found".to_string()),
-                    suggestion: Some("Run 'temps3 init' to set up your AWS credentials".to_string()),
+                    suggestion: Some(
+                        "Run 'temps3 init' to set up your AWS credentials".to_string(),
+                    ),
                 });
             }
         };
@@ -249,13 +278,25 @@ impl CredentialManager {
             Err(e) => {
                 let error_msg = e.to_string().to_lowercase();
                 let (error_type, suggestion) = if error_msg.contains("invalidaccesskeyid") {
-                    ("Invalid AWS Access Key ID", "Check your Access Key ID in 'temps3 init'")
+                    (
+                        "Invalid AWS Access Key ID",
+                        "Check your Access Key ID in 'temps3 init'",
+                    )
                 } else if error_msg.contains("signaturedoesnotmatch") {
-                    ("Invalid AWS Secret Access Key", "Check your Secret Access Key in 'temps3 init'")
+                    (
+                        "Invalid AWS Secret Access Key",
+                        "Check your Secret Access Key in 'temps3 init'",
+                    )
                 } else if error_msg.contains("expired") || error_msg.contains("token") {
-                    ("Expired AWS credentials", "Refresh your credentials with 'temps3 init'")
+                    (
+                        "Expired AWS credentials",
+                        "Refresh your credentials with 'temps3 init'",
+                    )
                 } else {
-                    ("AWS authentication failed", "Run 'temps3 init' to update your credentials")
+                    (
+                        "AWS authentication failed",
+                        "Run 'temps3 init' to update your credentials",
+                    )
                 };
 
                 return Ok(CredentialStatus {
@@ -275,7 +316,10 @@ impl CredentialManager {
         };
 
         // Test 3: Check specific S3 permissions
-        let has_required_permissions = self.check_s3_permissions(&client, bucket_name).await.unwrap_or(false);
+        let has_required_permissions = self
+            .check_s3_permissions(&client, bucket_name)
+            .await
+            .unwrap_or(false);
 
         Ok(CredentialStatus {
             valid: can_list_buckets,
@@ -289,7 +333,7 @@ impl CredentialManager {
     async fn check_s3_permissions(&self, client: &S3Client, bucket_name: &str) -> Result<bool> {
         // Try basic S3 operations to verify permissions
         let test_key = "temps3-permission-test";
-        
+
         // Test CreateBucket permission (if bucket doesn't exist)
         match client.head_bucket().bucket(bucket_name).send().await {
             Err(_) => {
@@ -312,7 +356,12 @@ impl CredentialManager {
                 {
                     Ok(_) => {
                         // Clean up test object
-                        let _ = client.delete_object().bucket(bucket_name).key(test_key).send().await;
+                        let _ = client
+                            .delete_object()
+                            .bucket(bucket_name)
+                            .key(test_key)
+                            .send()
+                            .await;
                         Ok(true)
                     }
                     Err(_) => Ok(false),
@@ -321,7 +370,11 @@ impl CredentialManager {
         }
     }
 
-    pub async fn check_permissions(&self, credentials: &AwsCredentials, bucket_name: &str) -> Result<Vec<String>> {
+    pub async fn check_permissions(
+        &self,
+        credentials: &AwsCredentials,
+        bucket_name: &str,
+    ) -> Result<Vec<String>> {
         info!("Checking S3 permissions for bucket: {}", bucket_name);
 
         let aws_credentials = Credentials::new(
@@ -384,7 +437,11 @@ impl CredentialManager {
 
     /// Validate that specific credentials can access a specific bucket
     #[allow(dead_code)]
-    pub async fn validate_bucket_access(&self, credentials: &AwsCredentials, bucket_name: &str) -> Result<bool> {
+    pub async fn validate_bucket_access(
+        &self,
+        credentials: &AwsCredentials,
+        bucket_name: &str,
+    ) -> Result<bool> {
         info!("Validating bucket access for: {}", bucket_name);
 
         let aws_credentials = Credentials::new(
@@ -430,50 +487,75 @@ impl CredentialManager {
             // File-based encryption key storage
             let key_path = self.config_dir.join("encryption.key");
             match fs::read_to_string(&key_path) {
-                Ok(key_b64) => {
-                    general_purpose::STANDARD.decode(key_b64)
-                        .map_err(|e| TempS3Error::EncryptionError(format!("Failed to decode encryption key: {}", e)))
-                }
+                Ok(key_b64) => general_purpose::STANDARD.decode(key_b64).map_err(|e| {
+                    TempS3Error::EncryptionError(format!("Failed to decode encryption key: {}", e))
+                }),
                 Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
                     // Generate new key
                     let rng = SystemRandom::new();
                     let mut key = vec![0u8; 32]; // 256-bit key
-                    rng.fill(&mut key)
-                        .map_err(|e| TempS3Error::EncryptionError(format!("Failed to generate encryption key: {}", e)))?;
+                    rng.fill(&mut key).map_err(|e| {
+                        TempS3Error::EncryptionError(format!(
+                            "Failed to generate encryption key: {}",
+                            e
+                        ))
+                    })?;
 
                     let key_b64 = general_purpose::STANDARD.encode(&key);
-                    fs::write(&key_path, &key_b64)
-                        .map_err(|e| TempS3Error::EncryptionError(format!("Failed to store encryption key: {}", e)))?;
+                    fs::write(&key_path, &key_b64).map_err(|e| {
+                        TempS3Error::EncryptionError(format!(
+                            "Failed to store encryption key: {}",
+                            e
+                        ))
+                    })?;
 
                     Ok(key)
                 }
-                Err(e) => Err(TempS3Error::EncryptionError(format!("Failed to read encryption key file: {}", e))),
+                Err(e) => Err(TempS3Error::EncryptionError(format!(
+                    "Failed to read encryption key file: {}",
+                    e
+                ))),
             }
         } else {
             // Keyring-based encryption key storage
             if let Some(ref entry) = self.encryption_entry {
                 match entry.get_password() {
-                    Ok(key_b64) => {
-                        general_purpose::STANDARD.decode(key_b64)
-                            .map_err(|e| TempS3Error::EncryptionError(format!("Failed to decode encryption key: {}", e)))
-                    }
+                    Ok(key_b64) => general_purpose::STANDARD.decode(key_b64).map_err(|e| {
+                        TempS3Error::EncryptionError(format!(
+                            "Failed to decode encryption key: {}",
+                            e
+                        ))
+                    }),
                     Err(keyring::Error::NoEntry) => {
                         // Generate new key
                         let rng = SystemRandom::new();
                         let mut key = vec![0u8; 32]; // 256-bit key
-                        rng.fill(&mut key)
-                            .map_err(|e| TempS3Error::EncryptionError(format!("Failed to generate encryption key: {}", e)))?;
+                        rng.fill(&mut key).map_err(|e| {
+                            TempS3Error::EncryptionError(format!(
+                                "Failed to generate encryption key: {}",
+                                e
+                            ))
+                        })?;
 
                         let key_b64 = general_purpose::STANDARD.encode(&key);
-                        entry.set_password(&key_b64)
-                            .map_err(|e| TempS3Error::EncryptionError(format!("Failed to store encryption key: {}", e)))?;
+                        entry.set_password(&key_b64).map_err(|e| {
+                            TempS3Error::EncryptionError(format!(
+                                "Failed to store encryption key: {}",
+                                e
+                            ))
+                        })?;
 
                         Ok(key)
                     }
-                    Err(e) => Err(TempS3Error::EncryptionError(format!("Failed to access encryption key: {}", e))),
+                    Err(e) => Err(TempS3Error::EncryptionError(format!(
+                        "Failed to access encryption key: {}",
+                        e
+                    ))),
                 }
             } else {
-                Err(TempS3Error::EncryptionError("Encryption entry not available".to_string()))
+                Err(TempS3Error::EncryptionError(
+                    "Encryption entry not available".to_string(),
+                ))
             }
         }
     }
@@ -482,21 +564,33 @@ impl CredentialManager {
         if self.use_file_storage {
             // File-based encryption key storage
             let key_path = self.config_dir.join("encryption.key");
-            let key_b64 = fs::read_to_string(&key_path)
-                .map_err(|e| TempS3Error::EncryptionError(format!("Failed to retrieve encryption key file: {}", e)))?;
-            
-            general_purpose::STANDARD.decode(key_b64)
-                .map_err(|e| TempS3Error::EncryptionError(format!("Failed to decode encryption key: {}", e)))
+            let key_b64 = fs::read_to_string(&key_path).map_err(|e| {
+                TempS3Error::EncryptionError(format!(
+                    "Failed to retrieve encryption key file: {}",
+                    e
+                ))
+            })?;
+
+            general_purpose::STANDARD.decode(key_b64).map_err(|e| {
+                TempS3Error::EncryptionError(format!("Failed to decode encryption key: {}", e))
+            })
         } else {
             // Keyring-based encryption key storage
             if let Some(ref entry) = self.encryption_entry {
-                let key_b64 = entry.get_password()
-                    .map_err(|e| TempS3Error::EncryptionError(format!("Failed to retrieve encryption key: {}", e)))?;
-                
-                general_purpose::STANDARD.decode(key_b64)
-                    .map_err(|e| TempS3Error::EncryptionError(format!("Failed to decode encryption key: {}", e)))
+                let key_b64 = entry.get_password().map_err(|e| {
+                    TempS3Error::EncryptionError(format!(
+                        "Failed to retrieve encryption key: {}",
+                        e
+                    ))
+                })?;
+
+                general_purpose::STANDARD.decode(key_b64).map_err(|e| {
+                    TempS3Error::EncryptionError(format!("Failed to decode encryption key: {}", e))
+                })
             } else {
-                Err(TempS3Error::EncryptionError("Encryption entry not available".to_string()))
+                Err(TempS3Error::EncryptionError(
+                    "Encryption entry not available".to_string(),
+                ))
             }
         }
     }
@@ -507,24 +601,28 @@ impl CredentialManager {
 
         let rng = SystemRandom::new();
         let mut nonce_bytes = vec![0u8; 12]; // 96-bit nonce
-        rng.fill(&mut nonce_bytes)
-            .map_err(|e| TempS3Error::EncryptionError(format!("Failed to generate nonce: {}", e)))?;
+        rng.fill(&mut nonce_bytes).map_err(|e| {
+            TempS3Error::EncryptionError(format!("Failed to generate nonce: {}", e))
+        })?;
 
         let nonce = Nonce::from_slice(&nonce_bytes);
-        
-        let mut ciphertext = cipher.encrypt(nonce, data.as_bytes())
+
+        let mut ciphertext = cipher
+            .encrypt(nonce, data.as_bytes())
             .map_err(|e| TempS3Error::EncryptionError(format!("Failed to encrypt data: {}", e)))?;
 
         // Prepend nonce to ciphertext
         let mut result = nonce_bytes;
         result.append(&mut ciphertext);
-        
+
         Ok(result)
     }
 
     fn decrypt_data(&self, encrypted_data: &[u8], key: &[u8]) -> Result<String> {
         if encrypted_data.len() < 12 {
-            return Err(TempS3Error::EncryptionError("Invalid encrypted data length".to_string()));
+            return Err(TempS3Error::EncryptionError(
+                "Invalid encrypted data length".to_string(),
+            ));
         }
 
         let cipher = Aes256Gcm::new_from_slice(key)
@@ -533,11 +631,16 @@ impl CredentialManager {
         let (nonce_bytes, ciphertext) = encrypted_data.split_at(12);
         let nonce = Nonce::from_slice(nonce_bytes);
 
-        let plaintext = cipher.decrypt(nonce, ciphertext)
+        let plaintext = cipher
+            .decrypt(nonce, ciphertext)
             .map_err(|e| TempS3Error::EncryptionError(format!("Failed to decrypt data: {}", e)))?;
 
-        String::from_utf8(plaintext)
-            .map_err(|e| TempS3Error::EncryptionError(format!("Failed to convert decrypted data to string: {}", e)))
+        String::from_utf8(plaintext).map_err(|e| {
+            TempS3Error::EncryptionError(format!(
+                "Failed to convert decrypted data to string: {}",
+                e
+            ))
+        })
     }
 }
 
@@ -557,19 +660,56 @@ pub async fn prompt_for_credentials() -> Result<AwsCredentials> {
         .map_err(|e| TempS3Error::CredentialError(format!("Failed to read secret key: {}", e)))?;
 
     let regions = vec![
-        "us-east-1", "us-east-2", "us-west-1", "us-west-2",
-        "eu-west-1", "eu-west-2", "eu-central-1",
-        "ap-southeast-1", "ap-southeast-2", "ap-northeast-1",
+        "us-east-1",
+        "us-east-2",
+        "us-west-2",
+        "eu-west-1",
+        "eu-central-1",
+        "eu-west-2",
+        "ap-southeast-1",
+        "ap-southeast-2",
+        "ap-northeast-1",
+        "sa-east-1",
     ];
+
+    let mut region_menu: Vec<String> = regions.iter().map(|code| code.to_string()).collect();
+    region_menu.push("Custom region...".to_string());
 
     let region_index = Select::new()
         .with_prompt("Select AWS Region")
-        .items(&regions)
+        .items(&region_menu)
         .default(0)
         .interact()
         .map_err(|e| TempS3Error::CredentialError(format!("Failed to select region: {}", e)))?;
 
-    let region = regions[region_index].to_string();
+    let region = if region_index < regions.len() {
+        regions[region_index].to_string()
+    } else {
+        loop {
+            let custom_region: String = Input::new()
+                .with_prompt("Enter custom AWS region code")
+                .validate_with(|input: &String| {
+                    if is_plausible_region(input) {
+                        Ok(())
+                    } else {
+                        Err("Region codes usu look like 'xx-yyy-z'; please include at least two hyphens")
+                    }
+                })
+                .interact_text()
+                .map_err(|e| {
+                    TempS3Error::CredentialError(format!(
+                        "Failed to read custom region: {}",
+                        e
+                    ))
+                })?;
+
+            if is_plausible_region(&custom_region) {
+                break custom_region;
+            } else {
+                println!("⚠️  '{}' does not look like a valid AWS region code. Examples: us-east-1, ap-southeast-2", custom_region);
+            }
+        }
+    };
 
     Ok(AwsCredentials {
         access_key_id,
@@ -577,4 +717,9 @@ pub async fn prompt_for_credentials() -> Result<AwsCredentials> {
         session_token: None,
         region,
     })
+}
+
+fn is_plausible_region(value: &str) -> bool {
+    let parts: Vec<&str> = value.split('-').collect();
+    parts.len() >= 3 && parts.iter().all(|part| !part.is_empty())
 }

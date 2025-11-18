@@ -56,7 +56,8 @@ impl StorageManager {
     pub async fn new(database_path: &Path) -> Result<Self> {
         // Ensure parent directory exists
         if let Some(parent) = database_path.parent() {
-            tokio::fs::create_dir_all(parent).await
+            tokio::fs::create_dir_all(parent)
+                .await
                 .map_err(|e| TempS3Error::DatabaseError(sqlx::Error::Io(e)))?;
         }
 
@@ -66,7 +67,7 @@ impl StorageManager {
             .connect_with(
                 sqlx::sqlite::SqliteConnectOptions::new()
                     .filename(database_path)
-                    .create_if_missing(true)
+                    .create_if_missing(true),
             )
             .await?;
 
@@ -152,17 +153,17 @@ impl StorageManager {
     ) -> Result<(Vec<UploadRecord>, u64)> {
         let offset = (page - 1) * limit;
         let now = Utc::now().to_rfc3339();
-        
+
         // Build the WHERE clause
         let mut where_conditions = Vec::new();
         let mut bind_values: Vec<String> = Vec::new();
-        
+
         // TTL filter
         if let Some(ttl) = ttl_filter {
             where_conditions.push("ttl_tag = ?");
             bind_values.push(ttl.to_string());
         }
-        
+
         // Status filter
         match status_filter {
             "active" => {
@@ -175,20 +176,20 @@ impl StorageManager {
             }
             _ => {} // "all" - no filter
         }
-        
+
         // Search pattern
         if let Some(pattern) = search_pattern {
             where_conditions.push("file_name LIKE ?");
             bind_values.push(format!("%{}%", pattern));
         }
-        
+
         // Build WHERE clause
         let where_clause = if where_conditions.is_empty() {
             String::new()
         } else {
             format!("WHERE {}", where_conditions.join(" AND "))
         };
-        
+
         // Build ORDER BY clause
         let order_by = match sort_by {
             "size" => "file_size",
@@ -196,9 +197,9 @@ impl StorageManager {
             "expiry" => "url_expiry",
             _ => "upload_date", // default to date
         };
-        
+
         let order_direction = if order == "asc" { "ASC" } else { "DESC" };
-        
+
         // Count total records (for pagination info)
         let count_query = format!("SELECT COUNT(*) as count FROM uploads {}", where_clause);
         let mut count_query_builder = sqlx::query(&count_query);
@@ -207,26 +208,26 @@ impl StorageManager {
         }
         let count_row = count_query_builder.fetch_one(&self.pool).await?;
         let total_count: i64 = count_row.get("count");
-        
+
         // Get records with pagination
         let records_query = format!(
             "SELECT * FROM uploads {} ORDER BY {} {} LIMIT ? OFFSET ?",
             where_clause, order_by, order_direction
         );
-        
+
         let mut query_builder = sqlx::query(&records_query);
         for value in &bind_values {
             query_builder = query_builder.bind(value);
         }
         query_builder = query_builder.bind(limit as i64).bind(offset as i64);
-        
+
         let rows = query_builder.fetch_all(&self.pool).await?;
-        
+
         let mut records = Vec::new();
         for row in rows {
             records.push(self.row_to_upload_record(row)?);
         }
-        
+
         Ok((records, total_count as u64))
     }
 
@@ -243,15 +244,13 @@ impl StorageManager {
     /// Mark all entries as expired by setting url_expiry to current time
     pub async fn expire_all_uploads(&self) -> Result<i64> {
         let now = Utc::now().to_rfc3339();
-        
-        let rows_affected = sqlx::query(
-            "UPDATE uploads SET url_expiry = ? WHERE url_expiry > ?"
-        )
-        .bind(&now)
-        .bind(&now)
-        .execute(&self.pool)
-        .await?
-        .rows_affected();
+
+        let rows_affected = sqlx::query("UPDATE uploads SET url_expiry = ? WHERE url_expiry > ?")
+            .bind(&now)
+            .bind(&now)
+            .execute(&self.pool)
+            .await?
+            .rows_affected();
 
         Ok(rows_affected as i64)
     }
@@ -268,7 +267,7 @@ impl StorageManager {
     /// Get count of active uploads (non-expired)
     pub async fn count_active_uploads(&self) -> Result<i64> {
         let now = Utc::now().to_rfc3339();
-        
+
         let row = sqlx::query("SELECT COUNT(*) as count FROM uploads WHERE url_expiry > ?")
             .bind(now)
             .fetch_one(&self.pool)
@@ -305,14 +304,6 @@ impl StorageManager {
     }
 }
 
-#[derive(Debug, Serialize, Deserialize)]
-pub struct UploadStats {
-    pub total_uploads: i64,
-    pub total_size_bytes: i64,
-    pub average_size_bytes: i64,
-    pub ttl_distribution: std::collections::HashMap<String, i64>,
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -322,9 +313,9 @@ mod tests {
     async fn test_storage_manager_operations() {
         let temp_dir = tempdir().unwrap();
         let db_path = temp_dir.path().join("test.db");
-        
+
         let storage = StorageManager::new(&db_path).await.unwrap();
-        
+
         let record = UploadRecord::new(
             "test.txt".to_string(),
             "/path/to/test.txt".to_string(),
@@ -341,16 +332,17 @@ mod tests {
         storage.store_upload(&record).await.unwrap();
 
         // Test list with advanced method
-        let (uploads, total_count) = storage.list_uploads_advanced(
-            None, "all", 10, 1, "date", "desc", None
-        ).await.unwrap();
+        let (uploads, total_count) = storage
+            .list_uploads_advanced(None, "all", 10, 1, "date", "desc", None)
+            .await
+            .unwrap();
         assert_eq!(uploads.len(), 1);
         assert_eq!(total_count, 1);
 
         // Test count methods
         let total_uploads = storage.count_all_uploads().await.unwrap();
         assert_eq!(total_uploads, 1);
-        
+
         let active_uploads = storage.count_active_uploads().await.unwrap();
         assert_eq!(active_uploads, 1);
     }

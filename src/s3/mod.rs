@@ -5,7 +5,7 @@ use aws_config::{BehaviorVersion, Region};
 use aws_sdk_s3::{
     primitives::ByteStream,
     types::{
-        CompletedMultipartUpload, CompletedPart, ExpirationStatus, 
+        CompletedMultipartUpload, CompletedPart, CreateBucketConfiguration, ExpirationStatus,
         LifecycleExpiration, LifecycleRule, LifecycleRuleFilter, Tag,
     },
     Client as S3Client,
@@ -26,6 +26,7 @@ const MAX_S3_PARTS: u64 = 10000; // S3 limit
 pub struct S3Service {
     client: S3Client,
     retry_manager: RetryManager,
+    region: String,
 }
 
 impl S3Service {
@@ -49,6 +50,7 @@ impl S3Service {
         Ok(Self {
             client,
             retry_manager: RetryManager::new(3, 1000),
+            region: credentials.region.clone(),
         })
     }
 
@@ -58,28 +60,28 @@ impl S3Service {
         // - Keep parts under S3's 10,000 part limit
         // - Ensure each part is at least 5MB (S3 requirement, except last part)
         // - Balance between few large chunks (efficiency) and parallelism
-        
+
         match file_size {
             // Files < 50MB: Use 5MB chunks (1-10 parts)
             size if size < 50 * 1024 * 1024 => 5 * 1024 * 1024,
-            
+
             // Files 50MB - 500MB: Use 10MB chunks (5-50 parts)
             size if size < 500 * 1024 * 1024 => 10 * 1024 * 1024,
-            
+
             // Files 500MB - 5GB: Use 50MB chunks (10-100 parts)
             size if size < 5 * 1024 * 1024 * 1024 => 50 * 1024 * 1024,
-            
+
             // Files 5GB - 50GB: Use 100MB chunks (50-500 parts)
             size if size < 50 * 1024 * 1024 * 1024 => 100 * 1024 * 1024,
-            
+
             // Files 50GB+: Calculate to stay under 10,000 parts with reasonable chunk size
             size => {
                 // Calculate minimum chunk size to stay under MAX_S3_PARTS
                 let min_chunk_for_parts = (size + MAX_S3_PARTS - 1) / MAX_S3_PARTS;
-                
+
                 // Use at least 500MB for very large files, but ensure we don't exceed part limit
                 let preferred_chunk = 500 * 1024 * 1024;
-                
+
                 std::cmp::max(min_chunk_for_parts, preferred_chunk)
             }
         }
@@ -97,7 +99,7 @@ impl S3Service {
             100 => "Very large files - high-performance chunks".to_string(),
             _ => "Ultra-large files - maximum efficiency".to_string(),
         };
-        
+
         (total_parts, size_desc, strategy_desc)
     }
 
@@ -107,7 +109,8 @@ impl S3Service {
         // Validate bucket name first
         if let Err(validation_error) = crate::config::validate_bucket_name(bucket_name) {
             return Err(TempS3Error::ValidationError(format!(
-                "Invalid bucket name '{}': {}", bucket_name, validation_error
+                "Invalid bucket name '{}': {}",
+                bucket_name, validation_error
             )));
         }
 
@@ -125,11 +128,22 @@ impl S3Service {
 
         // Try to create bucket
         info!("Creating bucket '{}'", bucket_name);
-        match self.retry_manager
+        match self
+            .retry_manager
             .retry_with_backoff(|| async {
-                self.client
-                    .create_bucket()
-                    .bucket(bucket_name)
+                let mut request = self.client.create_bucket().bucket(bucket_name);
+
+                // For regions other than us-east-1, we must specify the LocationConstraint
+                if self.region != "us-east-1" {
+                    let bucket_config = CreateBucketConfiguration::builder()
+                        .location_constraint(aws_sdk_s3::types::BucketLocationConstraint::from(
+                            self.region.as_str(),
+                        ))
+                        .build();
+                    request = request.create_bucket_configuration(bucket_config);
+                }
+
+                request
                     .send()
                     .await
                     .map_err(|e| TempS3Error::S3Error(e.into()))
@@ -143,7 +157,9 @@ impl S3Service {
             Err(TempS3Error::S3Error(aws_error)) => {
                 // Check if it's a bucket already exists error from another account
                 let error_str = aws_error.to_string().to_lowercase();
-                if error_str.contains("bucketalreadyexists") || error_str.contains("bucket already exists") {
+                if error_str.contains("bucketalreadyexists")
+                    || error_str.contains("bucket already exists")
+                {
                     Err(TempS3Error::ConfigError(format!(
                         "Bucket name '{}' is already taken by another AWS account. \
                         Please update your configuration with a unique bucket name. \
@@ -167,7 +183,10 @@ impl S3Service {
     }
 
     pub async fn configure_lifecycle_policies(&self, bucket_name: &str) -> Result<()> {
-        info!("Configuring lifecycle policies for bucket '{}'", bucket_name);
+        info!(
+            "Configuring lifecycle policies for bucket '{}'",
+            bucket_name
+        );
 
         let rules = vec![
             self.create_lifecycle_rule("1d", 1)?,
@@ -180,8 +199,10 @@ impl S3Service {
                 let lifecycle_config = aws_sdk_s3::types::BucketLifecycleConfiguration::builder()
                     .set_rules(Some(rules.clone()))
                     .build()
-                    .map_err(|e| TempS3Error::Unknown(format!("Failed to build lifecycle config: {}", e)))?;
-                
+                    .map_err(|e| {
+                        TempS3Error::Unknown(format!("Failed to build lifecycle config: {}", e))
+                    })?;
+
                 self.client
                     .put_bucket_lifecycle_configuration()
                     .bucket(bucket_name)
@@ -204,15 +225,22 @@ impl S3Service {
         ttl: &TtlDuration,
         verbose: bool,
     ) -> Result<(String, i64)> {
-        info!("Starting upload: {} -> s3://{}/{}", file_path.display(), bucket_name, s3_key);
+        info!(
+            "Starting upload: {} -> s3://{}/{}",
+            file_path.display(),
+            bucket_name,
+            s3_key
+        );
 
         let file_size = tokio::fs::metadata(file_path).await?.len();
         let checksum = self.calculate_file_checksum(file_path).await?;
 
         if file_size < MULTIPART_THRESHOLD {
-            self.upload_single_part(file_path, bucket_name, s3_key, ttl, verbose).await?;
+            self.upload_single_part(file_path, bucket_name, s3_key, ttl, verbose)
+                .await?;
         } else {
-            self.upload_multipart(file_path, bucket_name, s3_key, ttl, verbose).await?;
+            self.upload_multipart(file_path, bucket_name, s3_key, ttl, verbose)
+                .await?;
         }
 
         info!("Upload completed successfully");
@@ -241,9 +269,12 @@ impl S3Service {
         match ProgressStyle::default_bar().template(template) {
             Ok(style) => {
                 pb.set_style(style.progress_chars("##-"));
-            },
+            }
             Err(e) => {
-                warn!("Failed to set progress bar style: {}. Using default style.", e);
+                warn!(
+                    "Failed to set progress bar style: {}. Using default style.",
+                    e
+                );
                 // Continue with default style - non-critical error
             }
         }
@@ -290,7 +321,10 @@ impl S3Service {
 
         if verbose {
             info!("Uploading file using multipart upload...");
-            info!("📊 File size: {:.2} MB", file_size as f64 / (1024.0 * 1024.0));
+            info!(
+                "📊 File size: {:.2} MB",
+                file_size as f64 / (1024.0 * 1024.0)
+            );
             info!("📦 Chunk size: {} ({})", chunk_desc, strategy_desc);
             info!("🔢 Total parts: {}", total_parts);
         }
@@ -305,9 +339,12 @@ impl S3Service {
         match ProgressStyle::default_bar().template(template) {
             Ok(style) => {
                 pb.set_style(style.progress_chars("##-"));
-            },
+            }
             Err(e) => {
-                warn!("Failed to set progress bar style: {}. Using default style.", e);
+                warn!(
+                    "Failed to set progress bar style: {}. Using default style.",
+                    e
+                );
                 // Continue with default style - non-critical error
             }
         }
@@ -335,7 +372,15 @@ impl S3Service {
 
         // Upload parts
         let completed_parts = self
-            .upload_parts(file_path, bucket_name, s3_key, upload_id, total_parts, chunk_size, progress.clone())
+            .upload_parts(
+                file_path,
+                bucket_name,
+                s3_key,
+                upload_id,
+                total_parts,
+                chunk_size,
+                progress.clone(),
+            )
             .await?;
 
         // Complete multipart upload
@@ -400,7 +445,7 @@ impl S3Service {
                 // Read chunk data from specific byte range
                 let mut file = File::open(&file_path).await?;
                 file.seek(std::io::SeekFrom::Start(start_byte)).await?;
-                
+
                 let mut buffer = vec![0u8; part_size as usize];
                 file.read_exact(&mut buffer).await?;
 
@@ -421,9 +466,9 @@ impl S3Service {
                     })
                     .await?;
 
-                let etag = result
-                    .e_tag()
-                    .ok_or_else(|| TempS3Error::UploadError("No ETag received for part".to_string()))?;
+                let etag = result.e_tag().ok_or_else(|| {
+                    TempS3Error::UploadError("No ETag received for part".to_string())
+                })?;
 
                 let completed_part = CompletedPart::builder()
                     .part_number(part_number as i32)
@@ -442,7 +487,8 @@ impl S3Service {
 
         // Wait for all tasks to complete
         for task in tasks {
-            let completed_part = task.await
+            let completed_part = task
+                .await
                 .map_err(|e| TempS3Error::UploadError(format!("Task join error: {}", e)))??;
             completed_parts.push(completed_part);
         }
@@ -459,7 +505,10 @@ impl S3Service {
         s3_key: &str,
         expiry_days: u32,
     ) -> Result<(String, DateTime<Utc>)> {
-        info!("Generating presigned URL for s3://{}/{}", bucket_name, s3_key);
+        info!(
+            "Generating presigned URL for s3://{}/{}",
+            bucket_name, s3_key
+        );
 
         let expires_in = std::time::Duration::from_secs(expiry_days as u64 * 24 * 60 * 60);
         let expiry_time = Utc::now() + chrono::Duration::seconds(expires_in.as_secs() as i64);
@@ -484,14 +533,18 @@ impl S3Service {
 
     /// Empty the entire bucket by deleting all objects with the temps3 prefix
     pub async fn empty_bucket(&self, bucket_name: &str) -> Result<u64> {
-        info!("Starting bucket empty operation for bucket: {}", bucket_name);
-        
+        info!(
+            "Starting bucket empty operation for bucket: {}",
+            bucket_name
+        );
+
         let mut deleted_count = 0u64;
         let mut continuation_token: Option<String> = None;
 
         loop {
             // List objects with temps3 prefix
-            let mut list_request = self.client
+            let mut list_request = self
+                .client
                 .list_objects_v2()
                 .bucket(bucket_name)
                 .prefix("temps3/");
@@ -500,7 +553,8 @@ impl S3Service {
                 list_request = list_request.continuation_token(token);
             }
 
-            let list_response = self.retry_manager
+            let list_response = self
+                .retry_manager
                 .retry_with_backoff(|| async {
                     list_request
                         .clone()
@@ -511,7 +565,7 @@ impl S3Service {
                 .await?;
 
             let objects = list_response.contents();
-            
+
             if objects.is_empty() {
                 break;
             }
@@ -519,7 +573,8 @@ impl S3Service {
             // Delete objects in batches
             let batch_size = 1000; // S3 delete batch limit
             for chunk in objects.chunks(batch_size) {
-                let delete_objects: Vec<_> = chunk.iter()
+                let delete_objects: Vec<_> = chunk
+                    .iter()
                     .filter_map(|obj| obj.key())
                     .map(|key| {
                         aws_sdk_s3::types::ObjectIdentifier::builder()
@@ -550,19 +605,28 @@ impl S3Service {
                         .await?;
 
                     deleted_count += delete_objects.len() as u64;
-                    info!("Deleted {} objects (total: {})", delete_objects.len(), deleted_count);
+                    info!(
+                        "Deleted {} objects (total: {})",
+                        delete_objects.len(),
+                        deleted_count
+                    );
                 }
             }
 
             // Check if there are more objects
             if list_response.is_truncated() == Some(true) {
-                continuation_token = list_response.next_continuation_token().map(|s| s.to_string());
+                continuation_token = list_response
+                    .next_continuation_token()
+                    .map(|s| s.to_string());
             } else {
                 break;
             }
         }
 
-        info!("Bucket empty operation completed. Deleted {} objects", deleted_count);
+        info!(
+            "Bucket empty operation completed. Deleted {} objects",
+            deleted_count
+        );
         Ok(deleted_count)
     }
 
@@ -588,23 +652,19 @@ impl S3Service {
             .key("ttl")
             .value(ttl_tag)
             .build()
-            .map_err(|e| TempS3Error::LifecycleRuleError(format!("Failed to build TTL tag: {}", e)))?;
+            .map_err(|e| {
+                TempS3Error::LifecycleRuleError(format!("Failed to build TTL tag: {}", e))
+            })?;
 
         LifecycleRule::builder()
             .id(format!("temps3-{}-day-expiration", days))
             .status(ExpirationStatus::Enabled)
-            .filter(
-                LifecycleRuleFilter::builder()
-                    .tag(tag)
-                    .build()
-            )
-            .expiration(
-                LifecycleExpiration::builder()
-                    .days(days)
-                    .build()
-            )
+            .filter(LifecycleRuleFilter::builder().tag(tag).build())
+            .expiration(LifecycleExpiration::builder().days(days).build())
             .build()
-            .map_err(|e| TempS3Error::LifecycleRuleError(format!("Failed to build lifecycle rule: {}", e)))
+            .map_err(|e| {
+                TempS3Error::LifecycleRuleError(format!("Failed to build lifecycle rule: {}", e))
+            })
     }
 
     pub fn generate_s3_key(file_name: &str) -> String {
@@ -631,7 +691,7 @@ mod tests {
         assert_eq!(TtlDuration::OneDay.as_tag(), "1d");
         assert_eq!(TtlDuration::ThreeDays.as_tag(), "3d");
         assert_eq!(TtlDuration::FiveDays.as_tag(), "5d");
-        
+
         assert_eq!(TtlDuration::OneDay.as_days(), 1);
         assert_eq!(TtlDuration::ThreeDays.as_days(), 3);
         assert_eq!(TtlDuration::FiveDays.as_days(), 5);

@@ -13,7 +13,7 @@ NC='\033[0m' # No Color
 
 # Configuration
 REPO="killcod3/temps3"
-VERSION="v0.1.0"
+VERSION="v0.1.1"
 INSTALL_DIR="$HOME/.local/bin"
 
 # Detect platform
@@ -93,7 +93,7 @@ install_temps3() {
     
     echo
     echo -e "${GREEN}🎉 Installation complete!${NC}"
-    echo -e "${BLUE}Run 'temps3 config' to get started.${NC}"
+    echo -e "${BLUE}Run 'temps3 init' to get started.${NC}"
 }
 
 # Main execution

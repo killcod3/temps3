@@ -1,6 +1,6 @@
 [package]
 name = "temps3"
-version = "0.1.0"
+version = "0.1.1"
 edition = "2021"
 description = "A secure CLI application for temporary file storage using AWS S3 with automatic expiration, intelligent chunking, and local history tracking"
 authors = ["Jawad Shafique"]
@@ -44,6 +44,8 @@ log = "0.4"
 env_logger = "0.10"
 # Cross-platform keyring
 keyring = "2.0"
+# Clipboard support
+arboard = "3.3"
 # Progress bars and CLI utilities
 console = "0.15"
 dialoguer = "0.11"
